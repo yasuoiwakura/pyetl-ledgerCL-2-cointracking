@@ -2,6 +2,7 @@
 
 Converts withCL crypto debit card CSV exports to CoinTracking-compatible CSV format.
 
+
 ## Overview
 
 This Python script converts CSV exports from the withCL crypto debit card into the CSV format expected by CoinTracking.
@@ -68,9 +69,21 @@ When a row contains multiple fundings (e.g., `eurt, usdt`), it is split into mul
 ## Features
 
 - MVP: Import of expenses (Spend)
-- Robust handling of broken CSV  (extra columns are interpreted as split funding)
+- Virtual Tx-ID generation (hash-based, row-independent)
+- Comment extension with formatted amounts (German locale: `1.234,56 EUR`)
+- Robust handling of broken CSV (extra columns as split funding)
 - Split of multiple fundings per row
 - `csv.QUOTE_ALL` for safe output
+
+## Tx-ID Format
+
+Format: `{hash}-{date}-{merchantType}-{merchant}-{txCurrency}-{txAmount}-{cardCurrency}-{cardAmount}-{fundingAmount}-{fundingCurrency}-dup{dup:03d}-funding{fundingIndex:02d}`
+
+- **Hash**: SHA1 (6 chars) from transaction base data
+- **dup**: Index for duplicate transactions (same tx_base)
+- **funding**: Index for multi-funding splits (starts at 01)
+
+Tx-ID is deterministic and does not depend on row numbers.
 
 ## Limitations (Current MVP)
 
@@ -137,9 +150,9 @@ This script aims to handle all transaction types from withCL exports. If somethi
 
 ## Links
 
-- [CoinTracking](https://cointracking.info)
 - [WithCL Ledger Kreditkarte](https://withcl.com)
-- [CoinTracking User2User Telegram Channel](https://t.me/cointracking)
+- [CoinTracking](https://cointracking.info)
+- Telegram - CoinTracking User2User Support (look it up)
 
 ## Usage
 
@@ -151,4 +164,17 @@ Expects `CL_INPUT.csv` in the same directory and produces `CT_OUTPUT.csv`.
 
 ## Disclaimer
 
-This script is for personal use only. Not tax advice.
+This script is for educational use only. Not tax advice.
+Data might get deleted or false data returned - absolutely no warranty!
+
+## Changelog
+
+### v0.2.0 (2026-03-29)
+- Virtual Tx-ID generation (hash-based, row-independent)
+- Comment extension with formatted amounts (German locale: `1.234,56 EUR`)
+- Multi-funding split support for rows with multiple funding sources
+
+### v0.1.0 (2026-03-29)
+- MVP: Import of expenses (Spend)
+- Robust CSV handling (malformed withCL export)
+- `csv.QUOTE_ALL` for safe output

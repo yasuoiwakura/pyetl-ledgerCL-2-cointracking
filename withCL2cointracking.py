@@ -1,14 +1,15 @@
 import csv
 import re
+import hashlib
 
 
 # === KONFIGURATION ===
+SF_IN  = "CL_INPUT.csv"
+SF_OUT = "CT_OUTPUT.csv"
+
 CT_TYPE        = "Spend"
 CT_EXCHANGE    = "WithCL"
 CT_TRADEGROUP  = "python"
-
-SF_IN  = "CL_INPUT.csv"
-SF_OUT = "CT_OUTPUT.csv"
 
 CHECK_COL_NAMES = True
 EXPECTED_COLS = [
@@ -28,6 +29,8 @@ EXPECTED_COLS = [
 ALLOW_SIMPLIFIED_HANDLING_OF_SEVERAL_FUNDINGS_PER_ROW = True
 IGNORE_FURTHER_COLUMNS = True
 
+CREATE_VIRTUAL_TXID = True
+
 
 # === TEMPLATE ===
 CT_TEMPLATE = {
@@ -43,9 +46,9 @@ CT_TEMPLATE = {
     "Comment":          "",
     "Date":             "",
     "Liquidity pool":      "",
-    "Tx-ID":              "", # Optional
-    "Buy Value in Account Currency":  "",# Optional
-    "Sell Value in Account Currency":  "",# Optional
+    "Tx-ID":              "",
+    "Buy Value in Account Currency":  "",
+    "Sell Value in Account Currency":  "",
 }
 
 CT_COLS = list(CT_TEMPLATE.keys())
@@ -55,6 +58,23 @@ def log(msg):
     print(f"[DEBUG] {msg}")
 
 
+def sanitize_for_txid(value):
+    """Ersetzt problematische Zeichen durch Bindestrich."""
+    return re.sub(r'[^\w]', '-', str(value))
+
+
+def generate_txid_hash(data):
+    """Generiert kurzen Hash (6 Zeichen) aus den Tx-Daten."""
+    h = hashlib.sha1(data.encode('utf-8')).hexdigest()[:6]
+    return h
+
+
+def generate_txid(h, tx_base, dup_index, funding_index):
+    """Generiert Tx-ID mit Hash, Daten und Indices."""
+    txid = f"{h}-{tx_base}-dup{dup_index:03d}-funding{funding_index:02d}"
+    return txid
+
+
 def parse_funding(funding_str):
     """Extrahiert Betrag und Waehrung aus einem Funding-String wie '123.45 eurt'."""
     funding_str = str(funding_str).strip()
@@ -62,6 +82,18 @@ def parse_funding(funding_str):
     if not match:
         raise ValueError(f"Kann Funding nicht parsen: '{funding_str}'")
     return match.group(1), match.group(2).lower()
+
+
+def format_amount_currency(amount, currency):
+    """Formatiert Betrag mit deutschen Tausendertrennzeichen und Waehrung."""
+    amount = float(amount)
+    if currency == "VND":
+        formatted = f"{amount:,.0f}".replace(",", ".")
+    else:
+        s = f"{amount:,.2f}"
+        parts = s.split('.')
+        formatted = parts[0].replace(',', '.') + ',' + parts[1]
+    return f"{formatted} {currency}"
 
 
 def get_extra_columns(row):
@@ -80,6 +112,7 @@ def main():
     log(f"CHECK_COL_NAMES={CHECK_COL_NAMES}")
     log(f"ALLOW_SIMPLIFIED_HANDLING_OF_SEVERAL_FUNDINGS_PER_ROW={ALLOW_SIMPLIFIED_HANDLING_OF_SEVERAL_FUNDINGS_PER_ROW}")
     log(f"IGNORE_FURTHER_COLUMNS={IGNORE_FURTHER_COLUMNS}")
+    log(f"CREATE_VIRTUAL_TXID={CREATE_VIRTUAL_TXID}")
 
     with open(SF_IN, "r", newline="", encoding="utf-8") as infile:
         reader = csv.DictReader(infile)
@@ -107,6 +140,8 @@ def main():
                 raise ValueError(f"Mehrere Extra-Spalten gefunden aber IGNORE_FURTHER_COLUMNS=False: {extra_cols_all}")
 
     rows_out = []
+    seen_tx_base = {}
+
     for idx, row in enumerate(rows_in):
         log(f"Verarbeite Input-Zeile {idx+1}/{len(rows_in)}")
 
@@ -142,17 +177,57 @@ def main():
             )
 
         date = row.get("Timestamp", "") or ""
+        merchant_type = row.get("Merchant Type", "") or ""
+        merchant = row.get("Merchant", "") or ""
+        tx_currency = row.get("Transaction Currency", "") or ""
+        tx_amount = row.get("Transaction currency amount", "") or ""
+        card_currency = row.get("Card currency", "") or ""
+        card_amount = row.get("Card currency amount", "") or ""
         comment_multi = "Single expense multiple Fundings" if len(fundings) > 1 else ""
 
-        for funding_str in fundings:
+        tx_base_template = (
+            f"{sanitize_for_txid(date)}-"
+            f"{sanitize_for_txid(merchant_type)}-"
+            f"{sanitize_for_txid(merchant)}-"
+            f"{sanitize_for_txid(tx_currency)}-"
+            f"{sanitize_for_txid(tx_amount)}-"
+            f"{sanitize_for_txid(card_currency)}-"
+            f"{sanitize_for_txid(card_amount)}"
+        )
+
+        for fidx, funding_str in enumerate(fundings, start=1):
             amount, currency = parse_funding(funding_str)
             log(f"  -> Sell: {amount} {currency}")
+
+            tx_amount_fmt = format_amount_currency(tx_amount, tx_currency)
+            card_amount_fmt = format_amount_currency(card_amount, card_currency)
+
+            if comment_multi:
+                comment = f"{comment_multi} | {tx_amount_fmt} | {card_amount_fmt}"
+            else:
+                comment = f"{tx_amount_fmt} | {card_amount_fmt}"
 
             ct_row = CT_TEMPLATE.copy()
             ct_row["Date"]          = date
             ct_row["Sell Amount"]   = amount
             ct_row["Sell Currency"] = currency
-            ct_row["Comment"]       = comment_multi
+            ct_row["Comment"]       = comment
+
+            if CREATE_VIRTUAL_TXID:
+                tx_base = (
+                    f"{tx_base_template}-"
+                    f"{sanitize_for_txid(amount)}-"
+                    f"{sanitize_for_txid(currency)}"
+                )
+                h = generate_txid_hash(tx_base)
+
+                dup_count = seen_tx_base.get(tx_base, 0)
+                dup_index = dup_count + 1
+                seen_tx_base[tx_base] = dup_index
+
+                txid = generate_txid(h, tx_base, dup_index, fidx)
+                ct_row["Tx-ID"] = txid
+
             rows_out.append(ct_row)
 
     log(f"Output-Zeilen gesamt: {len(rows_out)}")
